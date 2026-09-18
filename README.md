@@ -77,7 +77,7 @@ Your existing `ollama` route through `llm-pi-ai` is untouched by any of this —
 node test.js
 ```
 
-It checks that `reasoningEffort: "off"` produces no reasoning output, that `"low"` produces some, and that a tool call round-trips correctly. Edit the model id at the top of the file if you are not using `qwen3.8:27b`.
+It checks that `reasoningEffort: "off"` produces no reasoning output, that `"low"` produces some, and that a tool call round-trips correctly. Defaults to `qwen3.8:27b`; point it at a different model with `OLLAMA_TEST_MODEL=your-model:tag node test.js`.
 
 ## Configuration reference
 

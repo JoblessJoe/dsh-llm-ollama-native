@@ -3,15 +3,19 @@
 // package exists for — reasoningEffort actually reaches the model.
 //
 //   node test.js
+//   OLLAMA_TEST_MODEL=your-model:tag node test.js
 //
-// Requires Ollama running locally with qwen3.8:27b pulled.
+// Requires Ollama running locally with a "thinking"-capable model pulled
+// (check with `ollama show <model>`). Defaults to qwen3.8:27b.
 
 import assert from 'node:assert/strict'
 import { OllamaNativeAdapter } from './adapter.js'
 
+const MODEL = process.env.OLLAMA_TEST_MODEL ?? 'qwen3.8:27b'
+
 const adapter = new OllamaNativeAdapter({
   provider: 'ollama-native',
-  models: [{ id: 'qwen3.8:27b', contextWindow: 77824, defaultReasoningEffort: 'low' }],
+  models: [{ id: MODEL, contextWindow: 77824, defaultReasoningEffort: 'low' }],
 })
 
 /** @param {string} text */
@@ -38,7 +42,7 @@ async function main() {
   console.log('1) reasoningEffort "off" must fully suppress thinking...')
   const off = await run({
     provider: 'ollama-native',
-    model: 'qwen3.8:27b',
+    model: MODEL,
     reasoningEffort: 'off',
     messages: [userMessage('What is 2+2? Answer in one word.')],
   })
@@ -48,7 +52,7 @@ async function main() {
   console.log('2) reasoningEffort "low" must produce some reasoning (proves the field reaches the model)...')
   const low = await run({
     provider: 'ollama-native',
-    model: 'qwen3.8:27b',
+    model: MODEL,
     reasoningEffort: 'low',
     messages: [userMessage('What is 2+2? Answer in one word.')],
   })
@@ -58,7 +62,7 @@ async function main() {
   console.log('3) tool call round-trip...')
   const toolCall = await run({
     provider: 'ollama-native',
-    model: 'qwen3.8:27b',
+    model: MODEL,
     reasoningEffort: 'low',
     messages: [userMessage('What is the weather in Berlin? Use the tool.')],
     tools: [{
