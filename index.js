@@ -16,11 +16,12 @@ import { OllamaNativeAdapter } from './adapter.js'
 export const name = 'llm-ollama-native'
 export const inject = ['llm']
 
-/** @param {import('@deepseek-ai/cordis').Context} ctx @param {{provider: string, baseURL?: string, models: object[]}} config */
+/** @param {import('@deepseek-ai/cordis').Context} ctx @param {{provider: string, baseURL?: string, displayName?: string, models: object[]}} config */
 export function apply(ctx, config) {
   const adapter = new OllamaNativeAdapter({
     provider: config.provider,
     baseURL: config.baseURL,
+    displayName: config.displayName,
     models: config.models,
   })
   ctx.llm.registerAdapter([config.provider], adapter)

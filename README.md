@@ -85,6 +85,7 @@ It checks that `reasoningEffort: "off"` produces no reasoning output, that `"low
 |---|---|---|
 | `provider` | yes | Route name other dsh config refers to (e.g. `agent-default-model.provider`) |
 | `baseURL` | no | Ollama server address, default `http://localhost:11434` |
+| `displayName` | no | Shown in model pickers, default `Ollama (native)` |
 | `models` | yes | Array of model entries |
 | `models[].id` | yes | Ollama model tag |
 | `models[].contextWindow` | no | Context window size, for display and request sizing |

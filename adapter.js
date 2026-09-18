@@ -100,17 +100,19 @@ export class OllamaNativeAdapter {
    * @param {object} options
    * @param {string} options.provider - route key this instance owns (registered by the caller).
    * @param {string} [options.baseURL] - Ollama server base, default `http://localhost:11434`.
+   * @param {string} [options.displayName] - shown in model pickers; default `Ollama (native)`.
    * @param {OllamaNativeModel[]} options.models
    */
   constructor(options) {
     this.provider = options.provider
     this.baseURL = options.baseURL ?? 'http://localhost:11434'
+    this.displayName = options.displayName ?? 'Ollama (native)'
     /** @type {Map<string, OllamaNativeModel>} */
     this.models = new Map(options.models.map(model => [model.id, model]))
   }
 
   providerInfo() {
-    return { id: this.provider, name: `Ollama (native, ${this.provider})` }
+    return { id: this.provider, name: this.displayName }
   }
 
   providerRetryPolicy() {
