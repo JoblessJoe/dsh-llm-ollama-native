@@ -1,0 +1,12 @@
+# This bundle's own default layer: mounts the plugin under id
+# `llm-ollama-native`. A profile's own cordis.patch.yml supplies the real
+# provider/baseURL/models via a plain `- id: llm-ollama-native` patch entry
+# (this id is already mounted once this bundle is in dsh.profile.bundles, so
+# that plain patch — not `insert:` — is correct).
+- insert:
+    - id: llm-ollama-native
+      name: 'dsh-llm-ollama-native'
+      config:
+        provider: ollama-native
+        baseURL: http://127.0.0.1:11434
+        models: []

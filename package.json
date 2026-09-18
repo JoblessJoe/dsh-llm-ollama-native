@@ -1,0 +1,35 @@
+{
+  "name": "dsh-llm-ollama-native",
+  "version": "0.1.0",
+  "description": "DSH LLM adapter that speaks Ollama's native /api/chat instead of the OpenAI-compatible endpoint, so think:false/low/medium/high actually reaches the model.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./adapter": "./adapter.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "author": "joblessjoe",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/joblessjoe/dsh-llm-ollama-native"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "ollama",
+    "llm-adapter"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-llm": "*"
+  }
+}
