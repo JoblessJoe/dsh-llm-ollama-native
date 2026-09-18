@@ -8,6 +8,8 @@ If you run dsh against a local Ollama model and set `reasoningEffort` to `low`, 
 
 dsh's built-in Ollama support goes through `llm-pi-ai`, which talks to Ollama's OpenAI-compatible endpoint (`/v1/chat/completions`). That endpoint silently ignores every reasoning-control field: `chat_template_kwargs`, a top-level `think`, a top-level `reasoning_effort`, streaming or not. The request always reaches the model with no signal, so the model falls back to its own default, which for most thinking models is the most verbose setting available.
 
+This is not a dsh misconfiguration. It is an open, unresolved Ollama bug: [ollama/ollama#16240](https://github.com/ollama/ollama/issues/16240) tracks the same `chat_template_kwargs` being dropped by the OpenAI-compatible endpoint. As of writing there is no fix or workaround from upstream through that endpoint.
+
 Ollama's *native* `/api/chat` endpoint does not have this problem. Its `think` field (`false`, `true`, or `"low"` / `"medium"` / `"high"` for models whose template supports it) reliably reaches the model. This package is a small adapter that uses that endpoint instead, so `reasoningEffort` in your dsh config does what it says.
 
 If you are not on Ollama, or you already get correct behavior from your provider, you do not need this.
