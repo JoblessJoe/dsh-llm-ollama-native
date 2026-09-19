@@ -72,7 +72,18 @@ async function main() {
   assert.ok(low.reasoning.length > 0, 'expected non-empty reasoning with effort "low"')
   console.log('   OK — reasoning length:', low.reasoning.length, 'text:', JSON.stringify(low.text))
 
-  console.log('3) tool call round-trip...')
+  console.log('3) maxTokens must actually cap output (was silently dropped before)...')
+  const capped = await run({
+    provider: 'ollama-native',
+    model: MODEL,
+    reasoningEffort: 'off',
+    maxTokens: 5,
+    messages: [userMessage('Write a 300 word essay about the ocean.')],
+  })
+  assert.equal(capped.finish.kind, 'max-tokens', `expected finish reason "max-tokens", got "${capped.finish?.kind}" — maxTokens isn't reaching Ollama`)
+  console.log('   OK — finish reason:', capped.finish.kind, 'text len:', capped.text.length)
+
+  console.log('4) tool call round-trip...')
   const toolCall = await run({
     provider: 'ollama-native',
     model: MODEL,

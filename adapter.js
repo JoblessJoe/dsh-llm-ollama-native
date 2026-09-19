@@ -173,12 +173,23 @@ export class OllamaNativeAdapter {
       ...options.messages.map(toOllamaMessage),
     ]
 
+    const sampling = {
+      ...options.temperature === undefined ? {} : { temperature: options.temperature },
+      // Ollama's native name for the output-token cap ("maxTokens" in dsh's
+      // provider-neutral vocabulary). Missing this meant every call generated
+      // uncapped — harmless for ordinary turns, but silently starved
+      // compaction's summarization call of the room it needed within a
+      // near-full context, surfacing as "summarization truncated at the
+      // token cap" with no indication the cap was never actually sent.
+      ...options.maxTokens === undefined ? {} : { num_predict: options.maxTokens },
+    }
+
     const body = {
       model: options.model,
       messages,
       think,
       stream: true,
-      ...options.temperature === undefined ? {} : { options: { temperature: options.temperature } },
+      ...Object.keys(sampling).length === 0 ? {} : { options: sampling },
       ...toOllamaTools(options.tools) === undefined ? {} : { tools: toOllamaTools(options.tools) },
     }
 
