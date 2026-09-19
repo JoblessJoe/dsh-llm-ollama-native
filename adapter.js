@@ -119,6 +119,11 @@ export class OllamaNativeAdapter {
     return undefined
   }
 
+  /** No image support (see README limitations) — no per-image pricing to report. */
+  imageRequestPricing() {
+    return undefined
+  }
+
   async listModels() {
     return [...this.models.values()].map(model => ({
       provider: this.provider,

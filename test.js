@@ -39,6 +39,19 @@ async function run(options) {
 }
 
 async function main() {
+  console.log('0) implements every LlmAdapter method dsh calls unconditionally...')
+  // dsh's token-meter calls adapter.imageRequestPricing(...) directly, not
+  // optionally-chained — a missing method throws "is not a function" deep
+  // inside compaction, which looks nothing like an adapter bug from the
+  // outside. This class doesn't extend the real LlmAdapter (no dependency
+  // on @deepseek-ai/dsh-llm at test time), so a method dsh's base class
+  // provides a default for has to be checked here instead of by `extends`.
+  for (const method of ['providerInfo', 'providerRetryPolicy', 'imageRequestPricing', 'listModels', 'resolveModel', 'prepareCall', 'stream']) {
+    assert.equal(typeof adapter[method], 'function', `adapter.${method} must be a function`)
+  }
+  assert.equal(adapter.imageRequestPricing('ollama-native', MODEL), undefined)
+  console.log('   OK — all required methods present')
+
   console.log('1) reasoningEffort "off" must fully suppress thinking...')
   const off = await run({
     provider: 'ollama-native',
