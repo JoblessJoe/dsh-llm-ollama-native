@@ -14,8 +14,10 @@
  * - No image/file content blocks — text and reasoning blocks only.
  * - No replay of prior assistant reasoning into follow-up requests (each
  *   request's history sends only visible text + tool calls/results).
- * - No retry policy, no attribution headers, no image pricing.
+ * - No retry policy, no attribution headers.
  */
+
+import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 
 /** @typedef {import('@deepseek-ai/dsh-llm').GenerateOptions} GenerateOptions */
 /** @typedef {import('@deepseek-ai/dsh-llm').StreamChunk} StreamChunk */
@@ -95,33 +97,32 @@ function finishReasonOf(done_reason, hasToolCalls) {
   return { kind: 'stop' }
 }
 
-export class OllamaNativeAdapter {
+export class OllamaNativeAdapter extends LlmAdapter {
   /**
    * @param {object} options
    * @param {string} options.provider - route key this instance owns (registered by the caller).
    * @param {string} [options.baseURL] - Ollama server base, default `http://localhost:11434`.
-   * @param {string} [options.displayName] - shown in model pickers; default `Ollama (native)`.
+   * @param {string} [options.displayName] - shown in model pickers; default `Ollama (native, <provider>)`,
+   *   which stays unique across multiple routes on this adapter — only override if you want that.
    * @param {OllamaNativeModel[]} options.models
    */
   constructor(options) {
+    super()
     this.provider = options.provider
     this.baseURL = options.baseURL ?? 'http://localhost:11434'
-    this.displayName = options.displayName ?? 'Ollama (native)'
+    this.displayName = options.displayName ?? `Ollama (native, ${options.provider})`
     /** @type {Map<string, OllamaNativeModel>} */
     this.models = new Map(options.models.map(model => [model.id, model]))
   }
 
+  // extends LlmAdapter for providerRetryPolicy/imageRequestPricing/prepareCall's
+  // working defaults — a hand-rolled duck-typed copy of this class silently
+  // dropped one of them (imageRequestPricing) and crashed compaction on every
+  // attempt; extending the real class means a future default method dsh adds
+  // is inherited automatically instead of needing to be remembered here.
+
   providerInfo() {
     return { id: this.provider, name: this.displayName }
-  }
-
-  providerRetryPolicy() {
-    return undefined
-  }
-
-  /** No image support (see README limitations) — no per-image pricing to report. */
-  imageRequestPricing() {
-    return undefined
   }
 
   async listModels() {
@@ -153,9 +154,8 @@ export class OllamaNativeAdapter {
     }
   }
 
-  async prepareCall(provider, model, signal) {
-    return { model: await this.resolveModel(provider, model, signal), stream: options => this.stream(options) }
-  }
+  // prepareCall: inherited from LlmAdapter — its default (resolveModel + a
+  // stream() closure) is exactly what this adapter needs, no override.
 
   /**
    * @param {GenerateOptions} options
@@ -282,6 +282,20 @@ export class OllamaNativeAdapter {
           return
         }
       }
+    }
+
+    // The response body closed without ever sending a `done:true` line —
+    // Ollama crashed, the connection dropped, or the process was killed
+    // mid-generation. Every stream must end in a `finish` chunk (dsh's own
+    // invariant checker rejects one that doesn't with an opaque internal
+    // error instead of a clean, callable failure) — close whatever blocks
+    // were open and report it as the real, specific failure it is.
+    if (reasoningOpen) yield { type: 'block-end', index: 0, block: { type: 'reasoning', text: reasoningText } }
+    if (textOpen) yield { type: 'block-end', index: 1, block: { type: 'text', text: textAccum } }
+    const failure = { message: 'Ollama closed the connection before sending a final response', code: 'STREAM_ENDED_EARLY' }
+    yield {
+      type: 'finish',
+      reason: options.signal?.aborted === true ? { kind: 'aborted', failure } : { kind: 'error', failure },
     }
   }
 }

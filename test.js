@@ -9,6 +9,7 @@
 // (check with `ollama show <model>`). Defaults to qwen3.8:27b.
 
 import assert from 'node:assert/strict'
+import { LlmAdapter } from '@deepseek-ai/dsh-llm'
 import { OllamaNativeAdapter } from './adapter.js'
 
 const MODEL = process.env.OLLAMA_TEST_MODEL ?? 'qwen3.8:27b'
@@ -39,18 +40,15 @@ async function run(options) {
 }
 
 async function main() {
-  console.log('0) implements every LlmAdapter method dsh calls unconditionally...')
-  // dsh's token-meter calls adapter.imageRequestPricing(...) directly, not
-  // optionally-chained — a missing method throws "is not a function" deep
-  // inside compaction, which looks nothing like an adapter bug from the
-  // outside. This class doesn't extend the real LlmAdapter (no dependency
-  // on @deepseek-ai/dsh-llm at test time), so a method dsh's base class
-  // provides a default for has to be checked here instead of by `extends`.
-  for (const method of ['providerInfo', 'providerRetryPolicy', 'imageRequestPricing', 'listModels', 'resolveModel', 'prepareCall', 'stream']) {
-    assert.equal(typeof adapter[method], 'function', `adapter.${method} must be a function`)
-  }
-  assert.equal(adapter.imageRequestPricing('ollama-native', MODEL), undefined)
-  console.log('   OK — all required methods present')
+  console.log('0) extends the real LlmAdapter (not a hand-maintained duck-type copy)...')
+  // A previous version hand-implemented this interface instead of extending
+  // the real class, and silently missed one method (imageRequestPricing) —
+  // dsh's token-meter calls it unconditionally, not optionally-chained, so
+  // the gap crashed compaction on every attempt. Extending the real class
+  // means a future default method dsh adds is inherited automatically
+  // instead of needing to be remembered and kept in sync here by hand.
+  assert.ok(adapter instanceof LlmAdapter, 'OllamaNativeAdapter must extend the real LlmAdapter')
+  console.log('   OK')
 
   console.log('1) reasoningEffort "off" must fully suppress thinking...')
   const off = await run({

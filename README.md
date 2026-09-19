@@ -71,9 +71,10 @@ Your existing `ollama` route through `llm-pi-ai` is untouched by any of this —
 
 ## Verify
 
-`test.js` drives the adapter directly against a running Ollama server, with no dsh runtime involved:
+`test.js` drives the adapter directly against a running Ollama server (no dsh profile needs to be running, though `@deepseek-ai/dsh-llm` — the type/base-class package the adapter extends — does need to be installed):
 
 ```sh
+npm install
 node test.js
 ```
 
