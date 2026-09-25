@@ -426,18 +426,23 @@ export class OllamaNativeAdapter extends LlmAdapter {
     // "continue" the cut-off <think> block via an assistant-role prefill —
     // that depends on this exact GGUF's chat-template Jinja treating a
     // trailing assistant message as continuation rather than a new turn,
-    // which is not verified for this model. A plain system-role note plus
-    // `think:false` only relies on request shapes this adapter already
-    // proves work correctly.
+    // which is not verified for this model. `role: 'user'` (not 'system')
+    // — this model's chat template hard-errors with "System message must be
+    // at the beginning" (a Jinja `raise_exception`) on any system message
+    // appended after the conversation start, confirmed by direct testing.
+    // A trailing user-role note has no such restriction, and merging it
+    // through the same consecutive-same-role collapse as everything else
+    // keeps it safe against a strict template if the prior message also
+    // happened to be user-role.
     const retryNote = {
-      role: 'system',
+      role: 'user',
       content: `Your reasoning on this turn ran long and was cut off at the configured thinking budget. `
         + `Partial reasoning notes (may be incomplete): ${result1.reasoningSoFar.slice(0, RETRY_NOTE_REASONING_CHARS)}\n\n`
         + 'Answer directly now — extended step-by-step reasoning is disabled for this retry.',
     }
     const retryBody = {
       ...baseBody,
-      messages: [...messages, retryNote],
+      messages: mergeConsecutiveSameRole([...messages, retryNote]),
       ...entry?.supportsThinking === false ? {} : { think: false },
     }
 
