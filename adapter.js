@@ -15,6 +15,12 @@
  * - No replay of prior assistant reasoning into follow-up requests (each
  *   request's history sends only visible text + tool calls/results).
  * - No retry policy, no attribution headers.
+ * - A model's `think` level (Rule 9 in ~/.dsh/AGENTS.md) is a system-prompt
+ *   INSTRUCTION, not an enforced token budget — Ollama has no server-side
+ *   ceiling on reasoning length (confirmed: ollama/ollama#17561). A model can
+ *   still generate an arbitrarily long reasoning block regardless of effort.
+ *   `thinkingBudgetTokens` below is this adapter's own client-side backstop
+ *   for that gap.
  */
 
 import { LlmAdapter } from '@deepseek-ai/dsh-llm'
@@ -39,6 +45,7 @@ const THINK_BY_EFFORT = {
  * @property {number} [contextWindow]
  * @property {keyof THINK_BY_EFFORT} [defaultReasoningEffort] - sent when a request omits one; defaults to "low" (the whole point of this adapter).
  * @property {boolean} [supportsThinking] - set false for a model whose chat template has no thinking support (verify via its GGUF-embedded chat_template: no `<think>`/`enable_thinking`). Ollama hard-errors ("%q does not support thinking") on ANY explicit `think` field for such a model, even `false` — omit the field entirely instead. Defaults to true.
+ * @property {number} [thinkingBudgetTokens] - client-side backstop on reasoning length (rough chars/4 estimate, not real tokenization). Ollama's `think` level does not cap length on its own (ollama/ollama#17561) — a model can still run away. Unset = no backstop, current behavior unchanged. When reasoning crosses this estimate mid-think, this adapter aborts that attempt and re-issues once with `think:false` plus a short note of the truncated reasoning, so the caller still gets a real answer instead of an empty or runaway response. See Qwen's own documented two-call budget pattern (github.com/QwenLM/Qwen3/blob/main/docs/source/getting_started/thinking_budget.md) — this is a robustness-first adaptation of it built only on request shapes already verified working through this adapter (message roles, `think:false`), not on unverified assistant-turn continuation/prefill behavior.
  */
 
 /**
@@ -125,6 +132,21 @@ function finishReasonOf(done_reason, hasToolCalls) {
   return { kind: 'stop' }
 }
 
+/**
+ * Cheap, honest token estimate — chars/4, not real tokenization. This only
+ * guards a client-side safety backstop ("stop before 20k, not before
+ * exactly N"), so being off by 20-30% doesn't matter; a real tokenizer
+ * would be a heavier dependency for no practical gain here.
+ * @param {string} text
+ * @returns {number}
+ */
+function estimateTokens(text) {
+  return Math.ceil(text.length / 4)
+}
+
+/** How much of the truncated reasoning to carry into the retry's note. */
+const RETRY_NOTE_REASONING_CHARS = 800
+
 export class OllamaNativeAdapter extends LlmAdapter {
   /**
    * @param {object} options
@@ -186,6 +208,171 @@ export class OllamaNativeAdapter extends LlmAdapter {
   // stream() closure) is exactly what this adapter needs, no override.
 
   /**
+   * Run one /api/chat attempt, translating Ollama's native events to
+   * StreamChunks at the given block-index offset (lets a retry attempt open
+   * fresh blocks without colliding with indices the first attempt already
+   * used — see `stream()`).
+   *
+   * Returns (as the generator's final value, not a yielded chunk):
+   * - `{ hitBudget: true, reasoningSoFar }` if reasoning crossed
+   *   `budgetTokens` before the model finished thinking. The attempt is
+   *   aborted at that point and a real `finish` is NOT yielded — the caller
+   *   is expected to retry.
+   * - `{ hitBudget: false }` on a normal finish, a real external abort, or a
+   *   dropped connection — in every one of those cases this method already
+   *   yielded the terminal `finish` chunk itself, same as before this
+   *   backstop existed.
+   *
+   * @param {Record<string, unknown>} body
+   * @param {number | undefined} budgetTokens
+   * @param {AbortSignal | undefined} externalSignal
+   * @param {number} indexOffset
+   */
+  async * #streamAttempt(body, budgetTokens, externalSignal, indexOffset) {
+    const controller = new AbortController()
+    let budgetAbort = false
+    const forwardAbort = () => controller.abort()
+    if (externalSignal !== undefined) {
+      if (externalSignal.aborted) controller.abort()
+      else externalSignal.addEventListener('abort', forwardAbort, { once: true })
+    }
+
+    const reasoningIndex = indexOffset
+    const textIndex = indexOffset + 1
+    const toolCallIndexBase = indexOffset + 2
+
+    let reasoningOpen = false
+    let reasoningText = ''
+    let textOpen = false
+    let textAccum = ''
+
+    try {
+      const response = await fetch(`${this.baseURL}/api/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      })
+      if (!response.ok || response.body === null) {
+        const text = await response.text().catch(() => '')
+        throw new Error(`dsh-llm-ollama-native: ${response.status} ${response.statusText} ${text}`)
+      }
+
+      let buffer = ''
+      let usageSent = false
+      const decoder = new TextDecoder('utf-8')
+
+      for await (const chunk of response.body) {
+        buffer += decoder.decode(chunk, { stream: true })
+        let newline
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline)
+          buffer = buffer.slice(newline + 1)
+          if (line.trim().length === 0) continue
+          const event = JSON.parse(line)
+          const message = event.message ?? {}
+
+          if (typeof message.thinking === 'string' && message.thinking.length > 0) {
+            if (!reasoningOpen) {
+              reasoningOpen = true
+              yield { type: 'block-start', index: reasoningIndex, blockType: 'reasoning' }
+            }
+            reasoningText += message.thinking
+            yield { type: 'reasoning-delta', index: reasoningIndex, text: message.thinking }
+
+            if (budgetTokens !== undefined && estimateTokens(reasoningText) >= budgetTokens) {
+              const note = '\n\n[thinking truncated — budget reached]'
+              reasoningText += note
+              yield { type: 'reasoning-delta', index: reasoningIndex, text: note }
+              yield { type: 'block-end', index: reasoningIndex, block: { type: 'reasoning', text: reasoningText } }
+              budgetAbort = true
+              controller.abort()
+              return { hitBudget: true, reasoningSoFar: reasoningText }
+            }
+          }
+          if (typeof message.content === 'string' && message.content.length > 0) {
+            if (!textOpen) {
+              textOpen = true
+              yield { type: 'block-start', index: textIndex, blockType: 'text' }
+            }
+            textAccum += message.content
+            yield { type: 'text-delta', index: textIndex, text: message.content }
+          }
+
+          if (event.done === true) {
+            if (reasoningOpen) {
+              yield { type: 'block-end', index: reasoningIndex, block: { type: 'reasoning', text: reasoningText } }
+            }
+            if (textOpen) {
+              yield { type: 'block-end', index: textIndex, block: { type: 'text', text: textAccum } }
+            }
+            const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
+            for (const [position, call] of toolCalls.entries()) {
+              const index = toolCallIndexBase + position
+              const id = call.id ?? `${Date.now()}-${position}`
+              const argumentsJson = JSON.stringify(call.function?.arguments ?? {})
+              yield { type: 'block-start', index, blockType: 'tool-call' }
+              yield {
+                type: 'tool-call-delta',
+                index,
+                id,
+                name: call.function?.name,
+                argumentsDelta: argumentsJson,
+              }
+              yield {
+                type: 'block-end',
+                index,
+                block: { type: 'tool-call', id, name: call.function?.name ?? '', arguments: argumentsJson },
+              }
+            }
+            if (!usageSent && (event.prompt_eval_count !== undefined || event.eval_count !== undefined)) {
+              usageSent = true
+              yield {
+                type: 'usage',
+                usage: {
+                  inputTokens: event.prompt_eval_count ?? 0,
+                  outputTokens: event.eval_count ?? 0,
+                },
+              }
+            }
+            yield { type: 'finish', reason: finishReasonOf(event.done_reason, toolCalls.length > 0) }
+            return { hitBudget: false }
+          }
+        }
+      }
+    } catch (error) {
+      if (budgetAbort) {
+        // We aborted this ourselves to cut over to the retry — not a real
+        // failure, swallow it. The caller yields no finish for this attempt.
+        return { hitBudget: true, reasoningSoFar: reasoningText }
+      }
+      if (!(externalSignal?.aborted === true)) throw error
+      // else: a genuine external cancellation raced the fetch/stream — fall
+      // through to the same terminal-chunk logic as a body that closed
+      // early, same as pre-existing behavior.
+    } finally {
+      if (externalSignal !== undefined) externalSignal.removeEventListener('abort', forwardAbort)
+    }
+
+    // The response body closed without ever sending a `done:true` line, and
+    // this was not our own budget-triggered abort — Ollama crashed, the
+    // connection dropped, the process was killed, or the caller's own
+    // signal aborted mid-generation. Every stream must end in a `finish`
+    // chunk (dsh's own invariant checker rejects one that doesn't with an
+    // opaque internal error instead of a clean, callable failure) — close
+    // whatever blocks were open and report it as the real, specific
+    // failure it is.
+    if (reasoningOpen) yield { type: 'block-end', index: reasoningIndex, block: { type: 'reasoning', text: reasoningText } }
+    if (textOpen) yield { type: 'block-end', index: textIndex, block: { type: 'text', text: textAccum } }
+    const failure = { message: 'Ollama closed the connection before sending a final response', code: 'STREAM_ENDED_EARLY' }
+    yield {
+      type: 'finish',
+      reason: externalSignal?.aborted === true ? { kind: 'aborted', failure } : { kind: 'error', failure },
+    }
+    return { hitBudget: false }
+  }
+
+  /**
    * @param {GenerateOptions} options
    * @returns {AsyncIterable<StreamChunk>}
    */
@@ -193,6 +380,7 @@ export class OllamaNativeAdapter extends LlmAdapter {
     const entry = this.models.get(options.model)
     const effort = options.reasoningEffort ?? entry?.defaultReasoningEffort ?? 'low'
     const think = THINK_BY_EFFORT[effort] ?? 'low'
+    const budgetTokens = entry?.thinkingBudgetTokens
 
     const messages = mergeConsecutiveSameRole([
       ...options.system === undefined || options.system.length === 0
@@ -212,118 +400,53 @@ export class OllamaNativeAdapter extends LlmAdapter {
       ...options.maxTokens === undefined ? {} : { num_predict: options.maxTokens },
     }
 
-    const body = {
+    const baseBody = {
       model: options.model,
       messages,
-      ...entry?.supportsThinking === false ? {} : { think },
       stream: true,
       ...Object.keys(sampling).length === 0 ? {} : { options: sampling },
       ...toOllamaTools(options.tools) === undefined ? {} : { tools: toOllamaTools(options.tools) },
     }
 
-    const response = await fetch(`${this.baseURL}/api/chat`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: options.signal,
-    })
-    if (!response.ok || response.body === null) {
-      const text = await response.text().catch(() => '')
-      throw new Error(`dsh-llm-ollama-native: ${response.status} ${response.statusText} ${text}`)
+    const firstBody = { ...baseBody, ...entry?.supportsThinking === false ? {} : { think } }
+
+    const attempt1 = this.#streamAttempt(firstBody, budgetTokens, options.signal, 0)
+    const it1 = attempt1[Symbol.asyncIterator]()
+    let result1
+    while (true) {
+      const next = await it1.next()
+      if (next.done) { result1 = next.value; break }
+      yield next.value
+    }
+    if (!result1.hitBudget) return
+
+    // Budget retry: one extra shot, reasoning forced off, with a short note
+    // of what the truncated reasoning had gotten to so the retry isn't
+    // starting from nothing. Deliberately NOT attempting to make the model
+    // "continue" the cut-off <think> block via an assistant-role prefill —
+    // that depends on this exact GGUF's chat-template Jinja treating a
+    // trailing assistant message as continuation rather than a new turn,
+    // which is not verified for this model. A plain system-role note plus
+    // `think:false` only relies on request shapes this adapter already
+    // proves work correctly.
+    const retryNote = {
+      role: 'system',
+      content: `Your reasoning on this turn ran long and was cut off at the configured thinking budget. `
+        + `Partial reasoning notes (may be incomplete): ${result1.reasoningSoFar.slice(0, RETRY_NOTE_REASONING_CHARS)}\n\n`
+        + 'Answer directly now — extended step-by-step reasoning is disabled for this retry.',
+    }
+    const retryBody = {
+      ...baseBody,
+      messages: [...messages, retryNote],
+      ...entry?.supportsThinking === false ? {} : { think: false },
     }
 
-    // Index 0 = reasoning block, 1 = text block, 2.. = tool-call blocks —
-    // fixed slots, opened lazily on first content, matching StreamChunk's
-    // "block-start once, then deltas, then block-end" contract.
-    let reasoningOpen = false
-    let reasoningText = ''
-    let textOpen = false
-    let textAccum = ''
-    let buffer = ''
-    let usageSent = false
-    const decoder = new TextDecoder('utf-8')
-
-    for await (const chunk of response.body) {
-      buffer += decoder.decode(chunk, { stream: true })
-      let newline
-      while ((newline = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, newline)
-        buffer = buffer.slice(newline + 1)
-        if (line.trim().length === 0) continue
-        const event = JSON.parse(line)
-        const message = event.message ?? {}
-
-        if (typeof message.thinking === 'string' && message.thinking.length > 0) {
-          if (!reasoningOpen) {
-            reasoningOpen = true
-            yield { type: 'block-start', index: 0, blockType: 'reasoning' }
-          }
-          reasoningText += message.thinking
-          yield { type: 'reasoning-delta', index: 0, text: message.thinking }
-        }
-        if (typeof message.content === 'string' && message.content.length > 0) {
-          if (!textOpen) {
-            textOpen = true
-            yield { type: 'block-start', index: 1, blockType: 'text' }
-          }
-          textAccum += message.content
-          yield { type: 'text-delta', index: 1, text: message.content }
-        }
-
-        if (event.done === true) {
-          if (reasoningOpen) {
-            yield { type: 'block-end', index: 0, block: { type: 'reasoning', text: reasoningText } }
-          }
-          if (textOpen) {
-            yield { type: 'block-end', index: 1, block: { type: 'text', text: textAccum } }
-          }
-          const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : []
-          for (const [position, call] of toolCalls.entries()) {
-            const index = 2 + position
-            const id = call.id ?? `${Date.now()}-${position}`
-            const argumentsJson = JSON.stringify(call.function?.arguments ?? {})
-            yield { type: 'block-start', index, blockType: 'tool-call' }
-            yield {
-              type: 'tool-call-delta',
-              index,
-              id,
-              name: call.function?.name,
-              argumentsDelta: argumentsJson,
-            }
-            yield {
-              type: 'block-end',
-              index,
-              block: { type: 'tool-call', id, name: call.function?.name ?? '', arguments: argumentsJson },
-            }
-          }
-          if (!usageSent && (event.prompt_eval_count !== undefined || event.eval_count !== undefined)) {
-            usageSent = true
-            yield {
-              type: 'usage',
-              usage: {
-                inputTokens: event.prompt_eval_count ?? 0,
-                outputTokens: event.eval_count ?? 0,
-              },
-            }
-          }
-          yield { type: 'finish', reason: finishReasonOf(event.done_reason, toolCalls.length > 0) }
-          return
-        }
-      }
-    }
-
-    // The response body closed without ever sending a `done:true` line —
-    // Ollama crashed, the connection dropped, or the process was killed
-    // mid-generation. Every stream must end in a `finish` chunk (dsh's own
-    // invariant checker rejects one that doesn't with an opaque internal
-    // error instead of a clean, callable failure) — close whatever blocks
-    // were open and report it as the real, specific failure it is.
-    if (reasoningOpen) yield { type: 'block-end', index: 0, block: { type: 'reasoning', text: reasoningText } }
-    if (textOpen) yield { type: 'block-end', index: 1, block: { type: 'text', text: textAccum } }
-    const failure = { message: 'Ollama closed the connection before sending a final response', code: 'STREAM_ENDED_EARLY' }
-    yield {
-      type: 'finish',
-      reason: options.signal?.aborted === true ? { kind: 'aborted', failure } : { kind: 'error', failure },
+    const attempt2 = this.#streamAttempt(retryBody, undefined, options.signal, 2)
+    const it2 = attempt2[Symbol.asyncIterator]()
+    while (true) {
+      const next = await it2.next()
+      if (next.done) return
+      yield next.value
     }
   }
 }
