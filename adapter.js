@@ -38,6 +38,7 @@ const THINK_BY_EFFORT = {
  * @property {string} [name] - display name; defaults to `id`.
  * @property {number} [contextWindow]
  * @property {keyof THINK_BY_EFFORT} [defaultReasoningEffort] - sent when a request omits one; defaults to "low" (the whole point of this adapter).
+ * @property {boolean} [supportsThinking] - set false for a model whose chat template has no thinking support (verify via its GGUF-embedded chat_template: no `<think>`/`enable_thinking`). Ollama hard-errors ("%q does not support thinking") on ANY explicit `think` field for such a model, even `false` — omit the field entirely instead. Defaults to true.
  */
 
 /**
@@ -88,6 +89,33 @@ function toOllamaTools(tools) {
     type: 'function',
     function: { name: tool.name, description: tool.description, parameters: tool.parameters },
   }))
+}
+
+/**
+ * Collapse consecutive same-role messages into one. DSH hands back the
+ * human's message plus separately-tracked system-reminder/context/skill
+ * blocks as several back-to-back `role: "user"` entries — harmless for a
+ * lenient chat template (Qwen), but a strict one (Mistral/Devstral) raises
+ * "conversation roles must alternate user and assistant... except for tool
+ * calls and results" on anything but genuine alternation. Tool messages are
+ * left alone: consecutive tool results are a normal, exempt shape.
+ * @param {Record<string, unknown>[]} messages
+ * @returns {Record<string, unknown>[]}
+ */
+function mergeConsecutiveSameRole(messages) {
+  const merged = []
+  for (const message of messages) {
+    const prev = merged[merged.length - 1]
+    if (prev !== undefined && prev.role === message.role && message.role !== 'tool') {
+      prev.content = [prev.content, message.content].filter(text => text.length > 0).join('\n\n')
+      if (Array.isArray(message.tool_calls)) {
+        prev.tool_calls = [...Array.isArray(prev.tool_calls) ? prev.tool_calls : [], ...message.tool_calls]
+      }
+      continue
+    }
+    merged.push({ ...message })
+  }
+  return merged
 }
 
 /** @param {string} done_reason */
@@ -166,12 +194,12 @@ export class OllamaNativeAdapter extends LlmAdapter {
     const effort = options.reasoningEffort ?? entry?.defaultReasoningEffort ?? 'low'
     const think = THINK_BY_EFFORT[effort] ?? 'low'
 
-    const messages = [
+    const messages = mergeConsecutiveSameRole([
       ...options.system === undefined || options.system.length === 0
         ? []
         : [{ role: 'system', content: options.system }],
       ...options.messages.map(toOllamaMessage),
-    ]
+    ])
 
     const sampling = {
       ...options.temperature === undefined ? {} : { temperature: options.temperature },
@@ -187,7 +215,7 @@ export class OllamaNativeAdapter extends LlmAdapter {
     const body = {
       model: options.model,
       messages,
-      think,
+      ...entry?.supportsThinking === false ? {} : { think },
       stream: true,
       ...Object.keys(sampling).length === 0 ? {} : { options: sampling },
       ...toOllamaTools(options.tools) === undefined ? {} : { tools: toOllamaTools(options.tools) },
