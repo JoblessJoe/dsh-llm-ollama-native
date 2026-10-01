@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/banner.svg" alt="dsh-llm-ollama-native: the OpenAI-compatible route drops think, the native /api/chat route delivers it" width="100%">
+  <img src="https://raw.githubusercontent.com/JoblessJoe/dsh-llm-ollama-native/main/.github/assets/banner.svg" alt="dsh-llm-ollama-native: the OpenAI-compatible route drops think, the native /api/chat route delivers it" width="100%">
 </p>
 
 <p align="center">
