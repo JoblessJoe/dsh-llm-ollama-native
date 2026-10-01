@@ -1,6 +1,18 @@
-# dsh-llm-ollama-native
+<p align="center">
+  <img src=".github/assets/banner.svg" alt="dsh-llm-ollama-native: the OpenAI-compatible route drops think, the native /api/chat route delivers it" width="100%">
+</p>
 
-An LLM adapter for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) that talks to Ollama's native `/api/chat` endpoint instead of its OpenAI-compatible one.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/JoblessJoe/dsh-llm-ollama-native?color=fbbf24" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/node-%E2%89%A522-fbbf24" alt="Node 22+">
+  <a href="https://github.com/ollama/ollama/issues/16240"><img src="https://img.shields.io/badge/works%20around-ollama%2316240-fbbf24" alt="works around ollama#16240"></a>
+</p>
+
+An LLM adapter for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) that talks to Ollama's **native `/api/chat`** endpoint instead of its OpenAI-compatible one, so `reasoningEffort: off / low / medium / high` actually changes how long your local model thinks.
+
+- **`off` really means off:** no more minutes of hidden reasoning before a one-line answer.
+- **Drop-in:** a new provider route next to your existing `ollama` one. Switch back any time.
+- **Runaway guard:** a client-side thinking budget stops a model that reasons forever.
 
 ## Why this exists
 

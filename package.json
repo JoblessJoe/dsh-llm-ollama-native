@@ -34,5 +34,10 @@
   },
   "devDependencies": {
     "@deepseek-ai/dsh-llm": "^0.0.1-rc.1"
-  }
+  },
+  "files": [
+    "index.js",
+    "adapter.js",
+    "cordis.patch.yml"
+  ]
 }
